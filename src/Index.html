@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <base target="_top">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f4f7f6;
+            margin: 0;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        h2 {
+            color: #333;
+            margin-top: 0;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            color: white;
+            transition: 0.2s;
+        }
+
+        .btn-start {
+            background: #4CAF50;
+        }
+
+        .btn-start:hover {
+            background: #45a049;
+        }
+
+        .btn-reschedule {
+            background: #2196F3;
+        }
+
+        .btn-reschedule:hover {
+            background: #0b7dda;
+        }
+
+        .btn-delete {
+            background: #f44336;
+        }
+
+        .btn-delete:hover {
+            background: #da190b;
+        }
+
+        .btn-warn {
+            background: #ff9800;
+        }
+
+        .btn-secondary {
+            background: #9e9e9e;
+        }
+
+        .settings-box {
+            background: #eef2f3;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            text-align: left;
+            font-size: 14px;
+        }
+
+        .settings-box label {
+            display: flex;
+            flex-direction: column;
+            width: 30%;
+        }
+
+        .settings-box input {
+            padding: 5px;
+            margin-top: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .settings-btn {
+            width: 100%;
+            margin-top: 10px;
+            background: #607D8B;
+            padding: 8px;
+            border: none;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #loader {
+            display: none;
+            margin-top: 20px;
+            color: #666;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="card" id="main-card">
+        <div class="settings-box">
+            <label>Work Start <input type="number" id="wStart" min="0" max="23"></label>
+            <label>Work End <input type="number" id="wEnd" min="1" max="24"></label>
+            <label>Gap (min) <input type="number" id="gapMins" min="0" max="120"></label>
+            <button class="settings-btn" onclick="triggerSaveSettings()">Save Configuration</button>
+        </div>
+
+        <h2 id="task-title">Loading...</h2>
+        <div id="loader">Processing... Please wait.</div>
+        <div id="content"></div>
+    </div>
+
+    <script>
+        let currentData = null;
+
+        function loadState() {
+            showLoader(true);
+            google.script.run.withSuccessHandler(renderUI).getSystemState();
+        }
+
+        function triggerSaveSettings() {
+            showLoader(true);
+            const set = {
+                workStart: parseInt(document.getElementById('wStart').value),
+                workEnd: parseInt(document.getElementById('wEnd').value),
+                gapMins: parseInt(document.getElementById('gapMins').value)
+            };
+            google.script.run.withSuccessHandler(renderUI).saveSettings(set);
+        }
+
+        function renderUI(data) {
+            showLoader(false);
+            currentData = data;
+
+            if (data.settings) {
+                document.getElementById('wStart').value = data.settings.workStart;
+                document.getElementById('wEnd').value = data.settings.workEnd;
+                document.getElementById('gapMins').value = data.settings.gapMins;
+            }
+
+            const container = document.getElementById('content');
+            container.innerHTML = '';
+
+            if (data.status === 'no_tasks') {
+                document.getElementById('task-title').innerText = 'No Upcoming Tasks';
+                container.innerHTML = '<p>Relax, your schedule is clear.</p>';
+                return;
+            }
+
+            document.getElementById('task-title').innerText = data.event.summary;
+
+            const timeStr = new Date(data.event.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            container.innerHTML += `<p>Scheduled: <b>${timeStr}</b></p>`;
+
+            if (!data.isStarted) {
+                container.innerHTML += `
+            <button class="btn btn-start" onclick="triggerAction('start')">Start Task</button>
+            <button class="btn btn-reschedule" onclick="triggerAction('reschedule_next')">Reschedule (Move Next)</button>
+            <button class="btn btn-delete" onclick="triggerAction('delete')">Delete Task</button>
+          `;
+            } else {
+                container.innerHTML += `<p style="color: green; font-weight: bold;">● Task in progress</p>`;
+
+                if (data.delayMinutes > 30) {
+                    container.innerHTML += `
+              <button class="btn btn-warn" onclick="triggerAction('add_time', ${data.delayMinutes})">
+                Add +${data.delayMinutes} mins (Ripples Future)
+              </button>
+            `;
+                }
+
+                container.innerHTML += `
+            <button class="btn btn-reschedule" onclick="triggerAction('finish_reschedule')">Finish Early/Late + Reschedule Future</button>
+            <button class="btn btn-secondary" onclick="triggerAction('finish_nothing')">Finish + Do Nothing</button>
+          `;
+            }
+        }
+
+        function triggerAction(action, addMinutes = 0) {
+            showLoader(true);
+            const payload = { eventId: currentData.event.id, addMinutes: addMinutes };
+            google.script.run.withSuccessHandler(renderUI).handleAction(action, payload);
+        }
+
+        function showLoader(show) {
+            document.getElementById('loader').style.display = show ? 'block' : 'none';
+            document.getElementById('content').style.opacity = show ? '0.3' : '1';
+        }
+
+        window.onload = loadState;
+        setInterval(loadState, 60000);
+    </script>
+</body>
+
+</html>
