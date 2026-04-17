@@ -184,7 +184,8 @@
             } else {
                 container.innerHTML += `<p style="color: green; font-weight: bold;">● Task in progress</p>`;
 
-                if (data.delayMinutes > 30) {
+                // Checks delay constraint AND the new timeAdded flag
+                if (data.delayMinutes > 30 && !data.timeAdded) {
                     container.innerHTML += `
               <button class="btn btn-warn" onclick="triggerAction('add_time', ${data.delayMinutes})">
                 Add +${data.delayMinutes} mins (Ripples Future)
