@@ -95,54 +95,74 @@ function saveSettings(settings) {
 }
 
 function handleAction(action, data) {
-  const props = PropertiesService.getUserProperties();
-  const eventId = data.eventId;
-  
-  const settings = {
-    workStart: parseInt(props.getProperty('WORK_START') || '10', 10),
-    workEnd: parseInt(props.getProperty('WORK_END') || '20', 10),
-    gapMins: parseInt(props.getProperty('GAP_MINS') || '30', 10)
-  };
-
-  if (!eventId) return;
-
-  switch (action) {
-    case 'delete':
-      Calendar.Events.remove(CALENDAR_ID, eventId);
-      props.deleteProperty('ACTIVE_TASK_ID');
-      props.deleteProperty('ACTIVE_TASK_START');
-      props.deleteProperty('TIME_ADDED_' + eventId);
-      break;
-
-    case 'start':
-      props.setProperty('ACTIVE_TASK_ID', eventId);
-      props.setProperty('ACTIVE_TASK_START', new Date().toISOString());
-      break;
-
-    case 'add_time':
-      props.setProperty('TIME_ADDED_' + eventId, 'true'); 
-      extendEventAndShift(eventId, data.addMinutes, settings);
-      break;
-
-    case 'reschedule_next':
-      rescheduleToNext(eventId, settings);
-      break;
-
-    case 'finish_reschedule':
-      finishAndReschedule(eventId, settings);
-      props.deleteProperty('ACTIVE_TASK_ID');
-      props.deleteProperty('ACTIVE_TASK_START');
-      props.deleteProperty('TIME_ADDED_' + eventId);
-      break;
-
-    case 'finish_nothing':
-      finishAndDoNothing(eventId);
-      props.deleteProperty('ACTIVE_TASK_ID');
-      props.deleteProperty('ACTIVE_TASK_START');
-      props.deleteProperty('TIME_ADDED_' + eventId);
-      break;
+  // Prevent Double-Click Race Conditions
+  const lock = LockService.getUserLock();
+  try {
+    lock.waitLock(10000); // Wait up to 10 seconds for an existing process to finish
+  } catch (e) {
+    throw new Error('System is busy processing your previous request. Please wait.');
   }
-  return getSystemState();
+
+  try {
+    const props = PropertiesService.getUserProperties();
+    const eventId = data.eventId;
+    
+    const settings = {
+      workStart: parseInt(props.getProperty('WORK_START') || '10', 10),
+      workEnd: parseInt(props.getProperty('WORK_END') || '20', 10),
+      gapMins: parseInt(props.getProperty('GAP_MINS') || '30', 10)
+    };
+
+    if (!eventId) return;
+
+    switch (action) {
+      case 'delete_nothing':
+        deleteAndDoNothing(eventId);
+        props.deleteProperty('ACTIVE_TASK_ID');
+        props.deleteProperty('ACTIVE_TASK_START');
+        props.deleteProperty('TIME_ADDED_' + eventId);
+        break;
+
+      case 'delete_reschedule':
+        deleteAndReschedule(eventId, settings);
+        props.deleteProperty('ACTIVE_TASK_ID');
+        props.deleteProperty('ACTIVE_TASK_START');
+        props.deleteProperty('TIME_ADDED_' + eventId);
+        break;
+
+      case 'start':
+        props.setProperty('ACTIVE_TASK_ID', eventId);
+        props.setProperty('ACTIVE_TASK_START', new Date().toISOString());
+        break;
+
+      case 'add_time':
+        props.setProperty('TIME_ADDED_' + eventId, 'true'); 
+        extendEventAndShift(eventId, data.addMinutes, settings);
+        break;
+
+      case 'reschedule_next':
+        rescheduleToNext(eventId, settings);
+        break;
+
+      case 'finish_reschedule':
+        finishAndReschedule(eventId, settings);
+        props.deleteProperty('ACTIVE_TASK_ID');
+        props.deleteProperty('ACTIVE_TASK_START');
+        props.deleteProperty('TIME_ADDED_' + eventId);
+        break;
+
+      case 'finish_nothing':
+        finishAndDoNothing(eventId);
+        props.deleteProperty('ACTIVE_TASK_ID');
+        props.deleteProperty('ACTIVE_TASK_START');
+        props.deleteProperty('TIME_ADDED_' + eventId);
+        break;
+    }
+    return getSystemState();
+  } finally {
+    // Always release the lock when done
+    lock.releaseLock();
+  }
 }
 
 // --- SHIFTING & SCHEDULING LOGIC ---
@@ -176,6 +196,27 @@ function extendEventAndShift(eventId, additionalMinutes, settings) {
   Calendar.Events.patch(events[targetIndex], CALENDAR_ID, eventId);
 
   chainShift(events, targetIndex, newEnd, settings, false, origStart, origEnd);
+}
+
+function deleteAndDoNothing(eventId) {
+  Calendar.Events.remove(CALENDAR_ID, eventId);
+}
+
+function deleteAndReschedule(eventId, settings) {
+  const targetEv = Calendar.Events.get(CALENDAR_ID, eventId);
+  const events = getEventChain(targetEv.start.dateTime);
+  
+  const targetIndex = events.findIndex(e => e.id === eventId);
+  if (targetIndex === -1) return;
+
+  const origStart = new Date(events[targetIndex].start.dateTime);
+  const origEnd = new Date(events[targetIndex].end.dateTime);
+
+  // 1. Remove the event entirely
+  Calendar.Events.remove(CALENDAR_ID, eventId);
+
+  // 2. Ripple pull future events into the newly opened space (starting from origStart)
+  chainShift(events, targetIndex, origStart, settings, true, origStart, origEnd);
 }
 
 function finishAndDoNothing(eventId) {
@@ -243,7 +284,6 @@ function chainShift(events, startIndex, currentBoundary, settings, forcePullBack
   let prevOriginalStart = origTargetStart; 
   let prevOriginalEnd = origTargetEnd;
 
-  // 1. Map out all immovable blocks (walls) to prevent collisions
   const unshiftableBlocks = [];
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
@@ -265,7 +305,6 @@ function chainShift(events, startIndex, currentBoundary, settings, forcePullBack
     const origEnd = new Date(ev.end.dateTime);
     const durationMs = origEnd.getTime() - origStart.getTime();
 
-    // Skip unshiftable tasks, but update the boundary
     if (ev.extendedProperties && ev.extendedProperties.private && ev.extendedProperties.private.isShiftable === 'false') {
       currentBoundary = origEnd;
       prevOriginalStart = origStart;
@@ -291,7 +330,6 @@ function chainShift(events, startIndex, currentBoundary, settings, forcePullBack
 
     let proposedEnd = new Date(proposedStart.getTime() + durationMs);
 
-    // 2. Smart Resolution Engine: Bounce between Working Hours and Immovable Walls
     let resolvingCollisions = true;
     let safetyCounter = 0;
 
@@ -299,7 +337,6 @@ function chainShift(events, startIndex, currentBoundary, settings, forcePullBack
       resolvingCollisions = false;
       safetyCounter++;
 
-      // Check Working Hours
       if (proposedStart.getHours() < settings.workStart) {
         proposedStart.setHours(settings.workStart, 0, 0, 0);
         proposedEnd = new Date(proposedStart.getTime() + durationMs);
@@ -316,11 +353,8 @@ function chainShift(events, startIndex, currentBoundary, settings, forcePullBack
         continue;
       }
 
-      // Check Collisions with Immovable Blocks
       for (let block of unshiftableBlocks) {
-        // If overlapping with a wall
         if (proposedStart.getTime() < block.end.getTime() && proposedEnd.getTime() > block.start.getTime()) {
-          // Jump over the wall and add the default gap
           proposedStart = new Date(block.end.getTime() + (settings.gapMins * 60000));
           proposedEnd = new Date(proposedStart.getTime() + durationMs);
           resolvingCollisions = true; 
@@ -329,9 +363,8 @@ function chainShift(events, startIndex, currentBoundary, settings, forcePullBack
       }
     }
 
-    // 3. Ripple Dissipation (Early Exit to save API limits)
     if (!forcePullBackward && proposedStart.getTime() === origStart.getTime() && proposedEnd.getTime() === origEnd.getTime()) {
-       break; // The ripple has settled into an empty space. Stop updating future events.
+       break; 
     }
 
     if (origStart.getTime() !== proposedStart.getTime() || origEnd.getTime() !== proposedEnd.getTime()) {

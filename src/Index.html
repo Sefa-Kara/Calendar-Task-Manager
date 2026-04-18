@@ -179,12 +179,12 @@
                 container.innerHTML += `
             <button class="btn btn-start" onclick="triggerAction('start')">Start Task</button>
             <button class="btn btn-reschedule" onclick="triggerAction('reschedule_next')">Reschedule (Move Next)</button>
-            <button class="btn btn-delete" onclick="triggerAction('delete')">Delete Task</button>
+            <button class="btn btn-delete" onclick="triggerAction('delete_reschedule')">Delete + Reschedule Future</button>
+            <button class="btn btn-secondary" onclick="triggerAction('delete_nothing')">Delete + Do Nothing</button>
           `;
             } else {
                 container.innerHTML += `<p style="color: green; font-weight: bold;">● Task in progress</p>`;
 
-                // Checks delay constraint AND the new timeAdded flag
                 if (data.delayMinutes > 30 && !data.timeAdded) {
                     container.innerHTML += `
               <button class="btn btn-warn" onclick="triggerAction('add_time', ${data.delayMinutes})">
@@ -203,7 +203,13 @@
         function triggerAction(action, addMinutes = 0) {
             showLoader(true);
             const payload = { eventId: currentData.event.id, addMinutes: addMinutes };
-            google.script.run.withSuccessHandler(renderUI).handleAction(action, payload);
+            google.script.run
+                .withFailureHandler(function (error) {
+                    alert(error.message);
+                    showLoader(false);
+                })
+                .withSuccessHandler(renderUI)
+                .handleAction(action, payload);
         }
 
         function showLoader(show) {
